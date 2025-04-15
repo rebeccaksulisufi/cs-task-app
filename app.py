@@ -1,6 +1,12 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash
-import sqlite3
+from psycopg2 import connect
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
 import os
+
+# Load environment variables
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'  # Replace with a secure key in production
@@ -8,29 +14,10 @@ app.secret_key = 'your_secret_key_here'  # Replace with a secure key in producti
 # Set your admin password here
 ADMIN_PASSWORD = 'mypassword'  # Change this to your desired password
 
-DATABASE = 'tasks.db'
 
 def get_db_connection():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
+    conn = connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
-
-def init_db():
-    # Create the tasks table if it doesn't exist
-    conn = get_db_connection()
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'outstanding'
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-# Initialize the database on startup
-init_db()
 
 @app.route('/')
 def home():
@@ -40,19 +27,26 @@ def home():
 @app.route('/submit', methods=['GET', 'POST'])
 def submit_task():
     conn = get_db_connection()
+    cur = conn.cursor()
+
     if request.method == 'POST':
         name = request.form['name']
         description = request.form['description']
         if not name or not description:
             flash("Please provide both your name and task description!", "warning")
             return redirect(url_for('submit_task'))
-        conn.execute('INSERT INTO tasks (name, description, status) VALUES (?, ?, ?)',
-                     (name, description, 'outstanding'))
+
+        cur.execute('INSERT INTO tasks (name, description, status) VALUES (%s, %s, %s)',
+                    (name, description, 'outstanding'))
         conn.commit()
         flash("Task submitted successfully!", "success")
+        cur.close()
+        conn.close()
         return redirect(url_for('submit_task'))
-    
-    tasks = conn.execute('SELECT * FROM tasks WHERE status="outstanding"').fetchall()
+
+    cur.execute('SELECT * FROM tasks WHERE status = %s', ('outstanding',))
+    tasks = cur.fetchall()
+    cur.close()
     conn.close()
     return render_template('submit.html', tasks=tasks)
 
@@ -81,8 +75,12 @@ def logout():
 def dashboard():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
+
     conn = get_db_connection()
-    tasks = conn.execute('SELECT * FROM tasks WHERE status="outstanding"').fetchall()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM tasks WHERE status = %s', ('outstanding',))
+    tasks = cur.fetchall()
+    cur.close()
     conn.close()
     return render_template('dashboard.html', tasks=tasks)
 
@@ -91,13 +89,3 @@ def dashboard():
 def complete_task(task_id):
     if not session.get('logged_in'):
         return redirect(url_for('login'))
-    conn = get_db_connection()
-    conn.execute('UPDATE tasks SET status="completed" WHERE id=?', (task_id,))
-    conn.commit()
-    conn.close()
-    flash(f"Task #{task_id} marked as completed.", "success")
-    return redirect(url_for('dashboard'))
-
-if __name__ == '__main__':
-    # When running locally, debug=True
-    app.run(host='0.0.0.0', port=5000, debug=True)
